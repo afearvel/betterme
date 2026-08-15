@@ -1,0 +1,83 @@
+# Publica BetterMe en GitHub Pages.
+#
+# Este archivo es una RECETA que GitHub ejecuta en una computadora prestada
+# suya (gratis) cada vez que subes código. Hace lo mismo que harías tú a mano:
+# instalar dependencias, correr las pruebas, compilar, y poner el resultado
+# en el servidor.
+#
+# Por eso `dist/` está en el .gitignore: la compilación no se sube, se rehace
+# aquí cada vez. Tu repositorio guarda la receta, no el pastel.
+
+name: Publicar en GitHub Pages
+
+# ---------------------------------------------------------------- cuándo corre
+on:
+  # Cada vez que subes algo a la rama main.
+  push:
+    branches: [main]
+  # Y también a mano, desde la pestaña Actions, con un botón.
+  # Útil para republicar sin cambiar nada.
+  workflow_dispatch:
+
+# --------------------------------------------------------------- qué le dejas
+# Por seguridad, un workflow no puede hacer nada que no le autorices.
+permissions:
+  contents: read   # leer tu código
+  pages: write     # escribir en el sitio publicado
+  id-token: write  # probarle a Pages que este workflow es de verdad tuyo
+
+# Si subes dos cambios seguidos, cancela la publicación vieja en vez de
+# encimarlas. Gana siempre el último commit.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================== 1. construir
+  construir:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bajar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm   # guarda node_modules entre corridas: tarda la mitad
+
+      - name: Instalar dependencias
+        # `npm ci` en vez de `npm install`: instala EXACTAMENTE las versiones
+        # del package-lock.json, sin actualizar nada por su cuenta. Es lo que
+        # garantiza que aquí se compile lo mismo que probaste en tu máquina.
+        run: npm ci
+
+      - name: Correr las pruebas
+        # Si alguna de las 132 pruebas falla, el workflow se detiene AQUÍ y
+        # el sitio no se actualiza. Tu teléfono se queda con la versión
+        # anterior, que sí funcionaba. Es una red de seguridad, no un trámite.
+        run: npm run prueba
+
+      - name: Compilar la app
+        run: npm run build
+
+      - name: Preparar Pages
+        uses: actions/configure-pages@v5
+
+      - name: Empaquetar el resultado
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist   # la carpeta que produjo `npm run build`
+
+  # =============================================================== 2. publicar
+  # Trabajo aparte porque solo debe correr si el de arriba salió bien.
+  publicar:
+    needs: construir
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.despliegue.outputs.page_url }}
+    steps:
+      - name: Publicar en Pages
+        id: despliegue
+        uses: actions/deploy-pages@v5
