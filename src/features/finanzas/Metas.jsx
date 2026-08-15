@@ -1,69 +1,66 @@
 import { useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
-import { addGoal, addToGoal, deleteGoal, updateGoal } from '../../db/db.js'
+import { Plus } from 'lucide-react'
+import { addGoal } from '../../db/db.js'
 import { money } from '../../lib/format.js'
 import { hitosDeMeta, planDeMeta } from '../../lib/finance.js'
+import { revisarApartado } from '../../lib/patrimonio.js'
 import { Bar, Button, Card, Empty, Field, Input, Sheet } from '../../components/ui.jsx'
+import { Punto, tonoDeMeta } from './BarraReparto.jsx'
+import HojaMeta from './HojaMeta.jsx'
 
-const vacio = { name: '', target: '', saved: '', deadline: '' }
+const vacio = { name: '', target: '', apartar: '', deadline: '' }
 
-/** Metas de ahorro con sub-hitos y el ritmo necesario por mes y por semana. */
-export default function Metas({ goals = [] }) {
-  const [abierto, setAbierto] = useState(false)
+/**
+ * Metas de ahorro. Cada meta es un pedazo de tu dinero con etiqueta.
+ *
+ * Lo apartado NO se escribe a mano: se mueve con Abonar y Retirar, que son los
+ * únicos caminos que respetan el tope del dinero libre. Ese era el hoyo por
+ * donde se colaba el poder apartar dinero que no existe.
+ */
+export default function Metas({ goals = [], libre = 0, envelopes = [] }) {
+  const [nueva, setNueva] = useState(false)
   const [form, setForm] = useState(vacio)
-  const [editandoId, setEditandoId] = useState(null)
-  const [abonoId, setAbonoId] = useState(null)
-  const [abono, setAbono] = useState('')
+  const [error, setError] = useState('')
+  const [abierta, setAbierta] = useState(null)
 
-  function abrirNueva() {
-    setForm(vacio)
-    setEditandoId(null)
-    setAbierto(true)
-  }
+  const revision = revisarApartado({ libre, monto: form.apartar })
 
-  function abrirEdicion(g) {
-    setForm({
-      name: g.name,
-      target: String(g.target),
-      saved: String(g.saved),
-      deadline: g.deadline ?? '',
-    })
-    setEditandoId(g.id)
-    setAbierto(true)
-  }
-
-  async function guardar() {
-    const datos = {
+  async function crear() {
+    if (form.apartar && !revision.ok) {
+      setError(`Solo tienes ${money(libre)} libre. Te faltan ${money(revision.faltante)}.`)
+      return
+    }
+    await addGoal({
       name: form.name.trim() || 'Meta',
       target: Number(form.target) || 0,
-      saved: Number(form.saved) || 0,
       deadline: form.deadline || null,
-    }
-    if (editandoId) await updateGoal(editandoId, datos)
-    else await addGoal(datos)
-    setAbierto(false)
+      apartarAhora: Number(form.apartar) || 0,
+    })
+    setForm(vacio)
+    setError('')
+    setNueva(false)
   }
 
-  async function confirmarAbono() {
-    const monto = Number(abono)
-    if (abonoId && monto > 0) await addToGoal(abonoId, monto)
-    setAbonoId(null)
-    setAbono('')
-  }
+  // La hoja se vuelve a sacar de `goals` en cada pintado en vez de guardar una
+  // copia: así, cuando abonas, el número de adentro se actualiza solo.
+  const metaAbierta = goals.find((g) => g.id === abierta) ?? null
 
   return (
     <>
       <div className="space-y-3">
         {goals.length === 0 && <Empty>Sin metas por ahora. Empieza con algo pequeño.</Empty>}
 
-        {goals.map((g) => {
+        {goals.map((g, i) => {
           const p = planDeMeta(g)
           const hitos = hitosDeMeta(g)
           return (
             <Card key={g.id} className="space-y-3">
-              <button type="button" onClick={() => abrirEdicion(g)} className="w-full text-left">
+              <button type="button" onClick={() => setAbierta(g.id)} className="w-full text-left">
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className="font-semibold">{g.name}</span>
+                  <span className="flex min-w-0 items-center gap-2 font-semibold">
+                    <Punto className={tonoDeMeta(i)} />
+                    <span className="truncate">{g.name}</span>
+                  </span>
                   <span className="tabular shrink-0 text-sm text-ink2">
                     {money(g.saved)} <span className="text-muted">/ {money(g.target)}</span>
                   </span>
@@ -85,7 +82,7 @@ export default function Metas({ goals = [] }) {
               <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
                 <div className="min-w-0 flex-1 text-xs">
                   {p.listo ? (
-                    <span className="font-semibold text-good">¡Completada!</span>
+                    <span className="font-semibold text-good">¡Completada! Ya puedes usarla.</span>
                   ) : p.porMes ? (
                     <span className="text-ink2">
                       <span className="tabular font-semibold text-ink">{money(p.porMes)}</span> al mes ·{' '}
@@ -95,23 +92,45 @@ export default function Metas({ goals = [] }) {
                     <span className="text-muted">Faltan {money(p.falta)} · sin fecha límite</span>
                   )}
                 </div>
-                <Button variant="ghost" className="shrink-0 px-3 py-2 text-sm" onClick={() => setAbonoId(g.id)}>
-                  Abonar
+                <Button
+                  variant="ghost"
+                  className="shrink-0 px-3 py-2 text-sm"
+                  onClick={() => setAbierta(g.id)}
+                >
+                  Mover
                 </Button>
               </div>
             </Card>
           )
         })}
 
-        <Button variant="ghost" onClick={abrirNueva} className="flex w-full items-center justify-center gap-2">
+        <Button
+          variant="ghost"
+          onClick={() => {
+            setForm(vacio)
+            setError('')
+            setNueva(true)
+          }}
+          className="flex w-full items-center justify-center gap-2"
+        >
           <Plus size={18} /> Nueva meta
         </Button>
+
+        <p className="px-1 text-xs text-muted">
+          Te quedan <span className="tabular font-semibold text-ink2">{money(libre)}</span> sin
+          apartar.
+        </p>
       </div>
 
-      <Sheet open={abierto} onClose={() => setAbierto(false)} title={editandoId ? 'Editar meta' : 'Nueva meta'}>
+      <Sheet open={nueva} onClose={() => setNueva(false)} title="Nueva meta">
         <div className="space-y-4">
           <Field label="Nombre">
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Laptop nueva" autoFocus />
+            <Input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="Laptop nueva"
+              autoFocus
+            />
           </Field>
           <Field label="Cuánto necesitas">
             <Input
@@ -121,54 +140,55 @@ export default function Metas({ goals = [] }) {
               placeholder="25000"
             />
           </Field>
-          <Field label="Cuánto llevas">
+          <Field
+            label="Apartar ahora (opcional)"
+            hint={`Sale de tu dinero libre, y tienes ${money(libre)}.`}
+          >
             <Input
-              value={form.saved}
-              onChange={(e) => setForm({ ...form, saved: e.target.value.replace(/[^\d]/g, '') })}
+              value={form.apartar}
+              onChange={(e) => {
+                setForm({ ...form, apartar: e.target.value.replace(/[^\d]/g, '') })
+                setError('')
+              }}
               inputMode="numeric"
               placeholder="0"
             />
           </Field>
-          <Field label="Fecha objetivo" hint="Opcional. Si la pones, la app calcula el ritmo por mes y por semana.">
-            <Input type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} />
-          </Field>
-
-          <div className="flex gap-2">
-            <Button onClick={guardar} className="flex-1">
-              Guardar
-            </Button>
-            {editandoId && (
-              <Button
-                variant="danger"
-                onClick={async () => {
-                  await deleteGoal(editandoId)
-                  setAbierto(false)
-                }}
-                aria-label="Borrar meta"
-              >
-                <Trash2 size={18} />
-              </Button>
-            )}
-          </div>
-        </div>
-      </Sheet>
-
-      <Sheet open={abonoId !== null} onClose={() => setAbonoId(null)} title="Abonar a la meta">
-        <div className="space-y-4">
-          <Field label="Monto">
+          <Field
+            label="Fecha objetivo"
+            hint="Opcional. Si la pones, la app calcula el ritmo por mes y por semana."
+          >
             <Input
-              value={abono}
-              onChange={(e) => setAbono(e.target.value.replace(/[^\d]/g, ''))}
-              inputMode="numeric"
-              placeholder="0"
-              autoFocus
+              type="date"
+              value={form.deadline}
+              onChange={(e) => setForm({ ...form, deadline: e.target.value })}
             />
           </Field>
-          <Button onClick={confirmarAbono} className="w-full">
-            Abonar
+
+          {Boolean(form.apartar) && !revision.ok && (
+            <p className="rounded-xl bg-crit/10 p-3 text-xs text-crit">
+              Solo tienes {money(libre)} libre. Te faltan {money(revision.faltante)} para apartar
+              esa cantidad.
+            </p>
+          )}
+          {error && <p className="text-xs text-crit">{error}</p>}
+
+          <Button
+            onClick={crear}
+            disabled={Boolean(form.apartar) && !revision.ok}
+            className="w-full"
+          >
+            Crear meta
           </Button>
         </div>
       </Sheet>
+
+      <HojaMeta
+        goal={metaAbierta}
+        libre={libre}
+        envelopes={envelopes}
+        onClose={() => setAbierta(null)}
+      />
     </>
   )
 }

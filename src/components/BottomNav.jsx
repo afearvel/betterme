@@ -3,7 +3,7 @@ import { Wallet, Repeat, Inbox, CalendarDays } from 'lucide-react'
 
 // `tambien` = otras rutas que deben dejar la pestaña marcada como activa.
 const tabs = [
-  { to: '/finanzas', label: 'Dinero', Icon: Wallet, tambien: ['/historial'] },
+  { to: '/finanzas', label: 'Dinero', Icon: Wallet, tambien: ['/historial', '/patrimonio'] },
   { to: '/habitos', label: 'Hábitos', Icon: Repeat },
   { to: '/pendientes', label: 'Pendientes', Icon: Inbox },
   { to: '/agenda', label: 'Agenda', Icon: CalendarDays },

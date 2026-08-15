@@ -1,6 +1,7 @@
 import Dexie from 'dexie'
 import { today } from '../lib/format.js'
 import { esHora, MAX_INTENCIONES } from '../lib/agenda.js'
+import { patrimonio } from '../lib/patrimonio.js'
 
 /**
  * Base de datos local (IndexedDB) — vive DENTRO del navegador del teléfono.
@@ -102,6 +103,49 @@ db.version(4).stores({
   intentions: 'id, date, done, order, [date+order], updatedAt',
 })
 
+/**
+ * Versión 5: patrimonio. Cuarto escalón, UNA tabla nueva.
+ *
+ *  goalMoves → la bitácora de cada meta. Cada vez que apartas, retiras o usas
+ *              dinero queda una línea. `goal.saved` sigue siendo la verdad
+ *              (es el número que se lee mil veces al pintar); esta tabla es el
+ *              "¿de dónde salió esto?" y solo se lee al abrir la meta.
+ *
+ *              kind: 'abono'  → dinero libre que pasa a estar apartado
+ *                    'retiro' → lo apartado regresa a estar libre
+ *                    'uso'    → gastaste el dinero de la meta: sale de la meta
+ *                               Y sale de tu patrimonio (deja además un gasto
+ *                               real en `transactions`, ligado por `txId`)
+ *
+ * Apartar NO es gastar: es ponerle etiqueta al dinero. Por eso abonos y
+ * retiros viven aparte de `transactions` y no ensucian la gráfica de los
+ * últimos 6 meses. La única excepción es 'uso', donde el dinero sí se va.
+ *
+ * El `upgrade` convierte lo que cada meta ya tenía guardado en su primer
+ * abono, para que la bitácora arranque cuadrada en vez de en blanco.
+ */
+db.version(5)
+  .stores({
+    goalMoves: 'id, goalId, date, kind, [goalId+date], updatedAt',
+  })
+  .upgrade(async (tx) => {
+    const metas = await tx.table('goals').toArray()
+    const semilla = metas
+      .filter((g) => (g.saved ?? 0) > 0)
+      .map((g) => ({
+        id: uid(),
+        goalId: g.id,
+        kind: 'abono',
+        amount: Math.round(g.saved),
+        note: 'Lo que ya llevabas',
+        txId: null,
+        date: today(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }))
+    if (semilla.length) await tx.table('goalMoves').bulkAdd(semilla)
+  })
+
 export const uid = () =>
   crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())
 
@@ -114,6 +158,10 @@ export const DEFAULT_SETTINGS = {
   monthlyIncome: 0, // ingreso mensual estimado, entero
   monthlySavings: 0, // cuánto quieres apartar al mes, entero
   useRealIncome: false, // true = calcular con los ingresos que registres, no con el estimado
+  // El dinero que YA tenías el día que empezaste a usar la app. Es el punto de
+  // partida del patrimonio: sin él, el total arrancaría en $0 y solo sería
+  // correcto después de años de registrar todo.
+  initialBalance: 0,
   updatedAt: now(),
 }
 
@@ -182,34 +230,165 @@ export async function deleteTransaction(id) {
 
 /* -------------------------------------------------------------------- metas */
 
-export async function addGoal({ name, target, saved = 0, deadline = null }) {
-  const count = await db.goals.count()
-  return db.goals.add({
+/**
+ * Las tablas que hacen falta para saber cuánto dinero libre hay. Cualquier
+ * operación que aparte dinero tiene que abrirlas todas de golpe.
+ */
+const TABLAS_DINERO = () => [db.settings, db.transactions, db.goals, db.goalMoves]
+
+/** Anota una línea en la bitácora de la meta. */
+function nuevoMovimientoDeMeta({ goalId, kind, amount, note = '', txId = null, date }) {
+  return {
     id: uid(),
+    goalId,
+    kind, // 'abono' | 'retiro' | 'uso'
+    amount: Math.max(0, Math.round(Number(amount) || 0)),
+    note: note.trim(),
+    txId,
+    date: date ?? today(),
+    createdAt: now(),
+    updatedAt: now(),
+  }
+}
+
+/**
+ * Crea una meta. Nace SIEMPRE en cero: lo apartado solo se mueve con abonos y
+ * retiros, que son los que respetan el tope. Si quieres apartar algo de una vez
+ * al crearla, pásale `apartarAhora` y se hace como un abono normal (con su
+ * validación y su línea en la bitácora).
+ */
+export async function addGoal({ name, target, deadline = null, apartarAhora = 0 }) {
+  const id = uid()
+  const count = await db.goals.count()
+  await db.goals.add({
+    id,
     name,
-    target: Math.round(target),
-    saved: Math.round(saved),
+    target: Math.max(0, Math.round(target)),
+    saved: 0,
     deadline, // 'AAAA-MM-DD' o null
     order: count,
     updatedAt: now(),
   })
+
+  const inicial = Math.round(Number(apartarAhora) || 0)
+  if (inicial > 0) {
+    const r = await abonarMeta(id, inicial)
+    // Si no alcanzaba, la meta se queda creada pero en cero y la pantalla te
+    // dice cuánto faltó. Borrarla sola sería peor: perderías el nombre y la
+    // fecha que acabas de escribir.
+    return { id, abono: r }
+  }
+  return { id, abono: null }
 }
 
 export async function updateGoal(id, patch) {
-  await db.goals.update(id, { ...patch, updatedAt: now() })
+  // `saved` no se toca por aquí a propósito: es la puerta que se colaba y
+  // permitía apartar dinero que no existe. Usa abonarMeta / retirarMeta.
+  const { saved, ...limpio } = patch
+  if ('target' in limpio) limpio.target = Math.max(0, Math.round(Number(limpio.target) || 0))
+  await db.goals.update(id, { ...limpio, updatedAt: now() })
 }
 
+/** Borra la meta y su bitácora. Lo que tenía apartado vuelve solo a ser libre. */
 export async function deleteGoal(id) {
-  await db.goals.delete(id)
+  await db.transaction('rw', db.goals, db.goalMoves, async () => {
+    await db.goals.delete(id)
+    await db.goalMoves.where('goalId').equals(id).delete()
+  })
 }
 
-/** Suma (o resta, con número negativo) a lo ahorrado de una meta. */
-export async function addToGoal(id, amount) {
-  const goal = await db.goals.get(id)
-  if (!goal) return
-  const saved = Math.max(0, goal.saved + Math.round(amount))
-  await db.goals.update(id, { saved, updatedAt: now() })
+/**
+ * APARTAR. La regla de oro de la app vive en estas líneas: no puedes apartar
+ * más dinero del que tienes libre.
+ *
+ * Regresa { ok, apartado, libre, faltante } — nunca lanza un error — para que
+ * la pantalla pueda decirte exactamente cuánto te faltó.
+ */
+export async function abonarMeta(id, amount, { note = '', date } = {}) {
+  const monto = Math.round(Number(amount) || 0)
+  if (monto <= 0) return { ok: false, motivo: 'vacio', faltante: 0 }
+
+  return db.transaction('rw', ...TABLAS_DINERO(), async () => {
+    const goal = await db.goals.get(id)
+    if (!goal) return { ok: false, motivo: 'no-existe', faltante: 0 }
+
+    const [settings, transactions, goals] = await Promise.all([
+      db.settings.get('general'),
+      db.transactions.toArray(),
+      db.goals.toArray(),
+    ])
+    const { libre } = patrimonio({ settings: settings ?? DEFAULT_SETTINGS, transactions, goals })
+
+    if (monto > libre) {
+      return { ok: false, motivo: 'no-alcanza', libre, faltante: monto - libre }
+    }
+
+    await db.goals.update(id, { saved: goal.saved + monto, updatedAt: now() })
+    await db.goalMoves.add(nuevoMovimientoDeMeta({ goalId: id, kind: 'abono', amount: monto, note, date }))
+    return { ok: true, apartado: goal.saved + monto, libre: libre - monto, faltante: 0 }
+  })
 }
+
+/**
+ * RETIRAR. Lo apartado vuelve a ser dinero libre. El dinero no se mueve de
+ * ningún lado: solo se le quita la etiqueta. El tope es lo que la meta tenga.
+ */
+export async function retirarMeta(id, amount, { note = '', date } = {}) {
+  const monto = Math.round(Number(amount) || 0)
+  if (monto <= 0) return { ok: false, motivo: 'vacio', faltante: 0 }
+
+  return db.transaction('rw', db.goals, db.goalMoves, async () => {
+    const goal = await db.goals.get(id)
+    if (!goal) return { ok: false, motivo: 'no-existe', faltante: 0 }
+    if (monto > goal.saved) {
+      return { ok: false, motivo: 'no-alcanza', faltante: monto - goal.saved, tope: goal.saved }
+    }
+
+    await db.goals.update(id, { saved: goal.saved - monto, updatedAt: now() })
+    await db.goalMoves.add(nuevoMovimientoDeMeta({ goalId: id, kind: 'retiro', amount: monto, note, date }))
+    return { ok: true, apartado: goal.saved - monto, faltante: 0 }
+  })
+}
+
+/**
+ * USAR LA META: ya compraste la laptop. Este es el único movimiento de metas
+ * donde el dinero SÍ se va de tu patrimonio, así que hace dos cosas de un
+ * jalón y de forma atómica (o pasan las dos, o no pasa ninguna):
+ *
+ *   1. registra un gasto de verdad en `transactions` — el total baja
+ *   2. saca ese dinero de lo apartado en la meta — deja de tener dueño
+ *
+ * Si lo hicieras a mano en dos pasos y se te olvidara uno, las cuentas
+ * quedarían chuecas para siempre. Por eso es un botón.
+ */
+export async function usarMeta(id, { amount, note = '', envelopeId = null, date } = {}) {
+  return db.transaction('rw', db.goals, db.goalMoves, db.transactions, async () => {
+    const goal = await db.goals.get(id)
+    if (!goal) return { ok: false, motivo: 'no-existe' }
+
+    const monto = Math.min(goal.saved, Math.round(Number(amount ?? goal.saved) || 0))
+    if (monto <= 0) return { ok: false, motivo: 'vacio' }
+
+    const cuando = date ?? today()
+    const txId = uid()
+    await db.transactions.add({
+      id: txId,
+      amount: monto,
+      type: 'gasto',
+      envelopeId,
+      note: note.trim() || goal.name,
+      date: cuando,
+      createdAt: now(),
+      updatedAt: now(),
+    })
+    await db.goals.update(id, { saved: goal.saved - monto, updatedAt: now() })
+    await db.goalMoves.add(
+      nuevoMovimientoDeMeta({ goalId: id, kind: 'uso', amount: monto, note, txId, date: cuando }),
+    )
+    return { ok: true, gastado: monto, restante: goal.saved - monto }
+  })
+}
+
 
 /* ------------------------------------------------------------------ hábitos */
 
@@ -786,7 +965,12 @@ export async function seedIfEmpty() {
   const yaHaySobres = await db.envelopes.count()
   if (yaHaySobres > 0) return
 
-  await db.settings.put(DEFAULT_SETTINGS)
+  // Los ajustes solo se crean si NO existen. Antes esto era un `put` a secas,
+  // y como la señal de "primera vez" es no tener sobres, el día que te
+  // quedaras sin sobres te borraba de un golpe tu ingreso mensual y —ahora—
+  // tu saldo inicial. Los ajustes no le pertenecen a los sobres.
+  const yaHayAjustes = await db.settings.get('general')
+  if (!yaHayAjustes) await db.settings.put(DEFAULT_SETTINGS)
   const base = [
     { name: 'Renta', kind: 'fijo', budget: 0 },
     { name: 'Transporte', kind: 'fijo', budget: 0 },
@@ -806,12 +990,13 @@ export async function seedIfEmpty() {
 export async function exportBackup() {
   const data = {
     app: 'betterme',
-    version: 4,
+    version: 5,
     exportedAt: now(),
     settings: await db.settings.toArray(),
     envelopes: await db.envelopes.toArray(),
     transactions: await db.transactions.toArray(),
     goals: await db.goals.toArray(),
+    goalMoves: await db.goalMoves.toArray(),
     habits: await db.habits.toArray(),
     cycles: await db.cycles.toArray(),
     routines: await db.routines.toArray(),
@@ -837,7 +1022,7 @@ export async function importBackup(file) {
   if (data.app !== 'betterme') throw new Error('Ese archivo no es un respaldo de BetterMe.')
 
   const tablas = [
-    db.settings, db.envelopes, db.transactions, db.goals,
+    db.settings, db.envelopes, db.transactions, db.goals, db.goalMoves,
     db.habits, db.cycles, db.routines, db.checks,
     db.todos,
     db.blocks, db.blockDays, db.intentions,
@@ -846,16 +1031,33 @@ export async function importBackup(file) {
   await db.transaction('rw', tablas, async () => {
     await Promise.all(tablas.map((t) => t.clear()))
     // Un respaldo viejo simplemente no trae las tablas nuevas: el de la
-    // versión 1 no tiene hábitos, el de la 2 no tiene pendientes y el de la 3
-    // no tiene agenda. Se restaura lo que sí venga y lo demás se queda vacío,
-    // sin reventar. Por eso la lista se recorre por nombre en vez de asumir
-    // que el archivo trae todo.
+    // versión 1 no tiene hábitos, el de la 2 no tiene pendientes, el de la 3
+    // no tiene agenda y el de la 4 no tiene la bitácora de metas. Se restaura
+    // lo que sí venga y lo demás se queda vacío, sin reventar. Por eso la
+    // lista se recorre por nombre en vez de asumir que el archivo trae todo.
     for (const nombre of [
-      'settings', 'envelopes', 'transactions', 'goals',
+      'settings', 'envelopes', 'transactions', 'goals', 'goalMoves',
       'habits', 'cycles', 'routines', 'checks', 'todos',
       'blocks', 'blockDays', 'intentions',
     ]) {
       if (data[nombre]?.length) await db[nombre].bulkAdd(data[nombre])
+    }
+
+    // Un respaldo de la versión 4 o anterior trae metas con dinero pero sin
+    // bitácora. Se le siembra su primer abono, igual que hace el `upgrade`,
+    // para que la meta no se vea como si el dinero hubiera aparecido solo.
+    if (!data.goalMoves?.length && data.goals?.length) {
+      const semilla = data.goals
+        .filter((g) => (g.saved ?? 0) > 0)
+        .map((g) =>
+          nuevoMovimientoDeMeta({
+            goalId: g.id,
+            kind: 'abono',
+            amount: g.saved,
+            note: 'Lo que ya llevabas',
+          }),
+        )
+      if (semilla.length) await db.goalMoves.bulkAdd(semilla)
     }
   })
 }

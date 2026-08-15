@@ -26,7 +26,7 @@ Eso es todo. En 1-2 minutos el sitio se actualiza solo.
 
 ### 1. `npm run prueba`
 
-Corre las 132 pruebas en tu máquina, **antes** de subir nada.
+Corre las 172 pruebas en tu máquina, **antes** de subir nada.
 
 No es obligatorio (el workflow las vuelve a correr en GitHub), pero aquí tardan
 2 segundos y allá tardan 2 minutos. Es más barato enterarte ahora.
@@ -83,7 +83,7 @@ El push despierta el workflow automáticamente. No hay que hacer nada más.
 GitHub te presta una computadora Linux y sigue la receta de
 `.github/workflows/deploy.yml`:
 
-    instalar dependencias  →  correr las 132 pruebas  →  compilar  →  publicar
+    instalar dependencias  →  correr las 172 pruebas  →  compilar  →  publicar
 
 Lo puedes ver en vivo: https://github.com/afearvel/betterme/actions
 

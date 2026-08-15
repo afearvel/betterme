@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 import { Settings } from 'lucide-react'
 import BottomNav from './components/BottomNav.jsx'
 import Finanzas from './screens/Finanzas.jsx'
+import Patrimonio from './screens/Patrimonio.jsx'
 import Historial from './screens/Historial.jsx'
 import Habitos from './screens/Habitos.jsx'
 import Pendientes from './screens/Pendientes.jsx'
@@ -10,6 +11,7 @@ import Ajustes from './screens/Ajustes.jsx'
 
 const titulos = {
   '/finanzas': 'Dinero',
+  '/patrimonio': 'Mi dinero',
   '/historial': 'Historial',
   '/habitos': 'Hábitos',
   '/pendientes': 'Pendientes',
@@ -44,6 +46,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/finanzas" replace />} />
           <Route path="/finanzas" element={<Finanzas />} />
+          <Route path="/patrimonio" element={<Patrimonio />} />
           <Route path="/historial" element={<Historial />} />
           <Route path="/habitos" element={<Habitos />} />
           <Route path="/pendientes" element={<Pendientes />} />

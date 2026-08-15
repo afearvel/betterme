@@ -1,16 +1,22 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Check, Minus, Plus } from 'lucide-react'
 import { addTransaction } from '../../db/db.js'
 import { relativeDay, today } from '../../lib/format.js'
+import { revisarGasto } from '../../lib/patrimonio.js'
 import { Card, Chip, Input } from '../../components/ui.jsx'
 import SelectorFecha from './SelectorFecha.jsx'
+import HojaSobregiro from './HojaSobregiro.jsx'
 
 /**
  * Cero fricción: abrir la app y en dos toques ya quedó registrado el gasto.
  * inputMode="numeric" hace que iPhone abra el teclado de números directo.
  * La fecha viene en "hoy" y solo se muestra el selector si lo pides.
+ *
+ * Lo único que se interpone es el aviso de sobregiro: si el gasto se pasa de
+ * tu dinero libre, antes de guardarlo sube una hoja para que decidas de dónde
+ * sale. Un ingreso nunca se detiene: solo suma.
  */
-export default function RegistroRapido({ envelopes = [] }) {
+export default function RegistroRapido({ envelopes = [], libre = 0, total = 0, goals = [] }) {
   const [tipo, setTipo] = useState('gasto')
   const [monto, setMonto] = useState('')
   const [sobreId, setSobreId] = useState(null)
@@ -18,12 +24,14 @@ export default function RegistroRapido({ envelopes = [] }) {
   const [fecha, setFecha] = useState(today())
   const [verFecha, setVerFecha] = useState(false)
   const [guardado, setGuardado] = useState(false)
+  const [avisando, setAvisando] = useState(false)
+  const montoRef = useRef(null)
 
   const valido = Number(monto) > 0
   const esHoy = fecha === today()
 
-  async function guardar() {
-    if (!valido) return
+  /** El guardado de verdad, sin preguntas. */
+  async function registrar() {
     await addTransaction({
       amount: Number(monto),
       type: tipo,
@@ -31,12 +39,23 @@ export default function RegistroRapido({ envelopes = [] }) {
       note: nota,
       date: fecha,
     })
+    setAvisando(false)
     setMonto('')
     setNota('')
     setFecha(today())
     setVerFecha(false)
     setGuardado(true)
     setTimeout(() => setGuardado(false), 1200)
+  }
+
+  async function guardar() {
+    if (!valido) return
+    // Un ingreso siempre cabe: solo suma. Un gasto se revisa contra lo libre.
+    if (tipo === 'gasto' && !revisarGasto({ libre, total, monto: Number(monto) }).cabe) {
+      setAvisando(true)
+      return
+    }
+    await registrar()
   }
 
   return (
@@ -53,6 +72,7 @@ export default function RegistroRapido({ envelopes = [] }) {
       <div className="flex items-center gap-2">
         <span className="text-3xl font-light text-muted">$</span>
         <input
+          ref={montoRef}
           value={monto}
           onChange={(e) => setMonto(e.target.value.replace(/[^\d]/g, ''))}
           inputMode="numeric"
@@ -111,6 +131,21 @@ export default function RegistroRapido({ envelopes = [] }) {
           `Registrar · ${relativeDay(fecha)}`
         )}
       </button>
+
+      <HojaSobregiro
+        open={avisando}
+        monto={Number(monto) || 0}
+        libre={libre}
+        total={total}
+        goals={goals}
+        onRegistrar={registrar}
+        onCambiarMonto={() => {
+          setAvisando(false)
+          // El teclado vuelve solo al monto: cambiarlo es la salida más común.
+          setTimeout(() => montoRef.current?.focus(), 50)
+        }}
+        onCancelar={() => setAvisando(false)}
+      />
     </Card>
   )
 }

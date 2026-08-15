@@ -14,6 +14,17 @@
   --color-good: #0ca30c;
   --color-warn: #fab219;
   --color-crit: #d03b3b;
+
+  /* Reparto del patrimonio. NO son cinco colores distintos: es UNA rampa del
+     mismo azul, de claro a oscuro. Cinco tonos diferentes se confunden entre
+     sí con daltonismo (lo verificamos); una rampa no, porque además cambia el
+     brillo. Quién es cada meta se lee en la lista de abajo, no en la barra. */
+  --color-meta-1: #90c1fe;
+  --color-meta-2: #5ea7ff;
+  --color-meta-3: #158bfe;
+  --color-meta-4: #0173d9;
+  --color-meta-5: #015cb0;
+  --color-libre: #57574f; /* gris neutro: el dinero que todavía no tiene dueño */
 }
 
 html {

@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, Upload } from 'lucide-react'
+import { Download, TriangleAlert, Upload } from 'lucide-react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, exportBackup, getSettings, importBackup, saveSettings } from '../db/db.js'
 import { money } from '../lib/format.js'
 import { resumenDiario } from '../lib/finance.js'
+import { revisarSaldoInicial } from '../lib/patrimonio.js'
 import { Button, Card, Field, Input, Section, Toggle } from '../components/ui.jsx'
 
 export default function Ajustes() {
   const settings = useLiveQuery(() => getSettings(), [], null)
   const envelopes = useLiveQuery(() => db.envelopes.toArray(), [], [])
   const transactions = useLiveQuery(() => db.transactions.toArray(), [], [])
+  const goals = useLiveQuery(() => db.goals.toArray(), [], [])
 
   const [ingreso, setIngreso] = useState('')
   const [ahorro, setAhorro] = useState('')
+  const [inicial, setInicial] = useState('')
   const [aviso, setAviso] = useState('')
   const fileRef = useRef(null)
 
@@ -20,9 +23,22 @@ export default function Ajustes() {
     if (!settings) return
     setIngreso(String(settings.monthlyIncome || ''))
     setAhorro(String(settings.monthlySavings || ''))
+    setInicial(String(settings.initialBalance || ''))
   }, [settings])
 
   const r = resumenDiario({ settings, envelopes, transactions })
+
+  // Cómo quedaría el patrimonio con el saldo que estás escribiendo, ANTES de
+  // guardarlo. Bajarlo de más puede dejarte con más dinero apartado en metas
+  // del que tienes; más vale avisar que dejarte ver un número rojo sin
+  // explicación.
+  const previa = revisarSaldoInicial({ nuevo: Number(inicial) || 0, transactions, goals })
+
+  async function guardarInicial() {
+    await saveSettings({ initialBalance: Number(inicial) || 0 })
+    setAviso('Saldo inicial guardado.')
+    setTimeout(() => setAviso(''), 1500)
+  }
 
   async function guardar() {
     await saveSettings({
@@ -48,6 +64,49 @@ export default function Ajustes() {
 
   return (
     <div className="space-y-6">
+      <Section title="Tu punto de partida">
+        <Card className="space-y-4">
+          <Field
+            label="Dinero que ya tenías"
+            hint="Lo que había en tu cuenta y tu cartera el día que empezaste a usar la app. A partir de ahí, los ingresos suman y los gastos restan."
+          >
+            <Input
+              value={inicial}
+              onChange={(e) => setInicial(e.target.value.replace(/[^\d]/g, ''))}
+              inputMode="numeric"
+              placeholder="0"
+            />
+          </Field>
+
+          <div className="space-y-1 border-t border-line pt-3 text-sm text-ink2">
+            <Linea etiqueta="Saldo inicial" valor={money(Number(inicial) || 0)} />
+            <Linea etiqueta="= Tu dinero quedaría en" valor={money(previa.total)} fuerte />
+            <Linea etiqueta="Apartado en metas" valor={money(previa.apartado)} />
+            <Linea etiqueta="Libre" valor={money(previa.libre)} />
+          </div>
+
+          {previa.rompe && (
+            <p className="flex items-start gap-2 rounded-xl bg-crit/10 p-3 text-xs text-crit">
+              <TriangleAlert size={16} className="mt-px shrink-0" />
+              <span>
+                Con ese saldo tendrías {money(previa.apartado)} apartado en metas y solo{' '}
+                {money(previa.total)} en total. Puedes guardarlo igual, pero vas a tener que retirar{' '}
+                {money(previa.faltante)} de alguna meta para que cuadre.
+              </span>
+            </p>
+          )}
+
+          <Button onClick={guardarInicial} className="w-full">
+            Guardar saldo inicial
+          </Button>
+
+          <p className="text-xs text-muted">
+            Este número no es un ingreso: no aparece en tus movimientos ni en la gráfica del mes.
+            Es nada más el punto donde arranca la cuenta.
+          </p>
+        </Card>
+      </Section>
+
       <Section title="Tu dinero al mes">
         <Card className="space-y-4">
           <Field label="Ingreso mensual" hint="Aproximado. Pesos enteros.">

@@ -7,7 +7,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host",
-    "prueba": "node pruebas-habitos.mjs && node pruebas-pendientes.mjs && node pruebas-agenda.mjs"
+    "prueba": "node pruebas-patrimonio.mjs && node pruebas-habitos.mjs && node pruebas-pendientes.mjs && node pruebas-agenda.mjs"
   },
   "dependencies": {
     "dexie": "^4.4.5",

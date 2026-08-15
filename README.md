@@ -5,7 +5,9 @@ no hay servidor, no hay base de datos remota, no hay cuenta que crear y no cuest
 mantenerla. Los datos se guardan en IndexedDB, la base de datos que el propio navegador
 le da a cada sitio.
 
-Estado actual: **los cuatro módulos terminados** — Dinero, Hábitos, Pendientes y Agenda.
+Estado actual: **los cuatro módulos terminados** — Dinero, Hábitos, Pendientes y Agenda —
+más el **patrimonio**: la app sabe cuánto dinero tienes en total, cuánto está apartado en
+metas y cuánto sigue libre.
 
 ### Qué va en cada módulo
 
@@ -170,7 +172,8 @@ en lugar de dejarla como pestaña.
 src/
   db/db.js                 Esquema de IndexedDB y todas las operaciones de datos
   lib/format.js            Dinero y fechas
-  lib/finance.js           Las cuentas: gasto libre diario, sobres, metas
+  lib/finance.js           Las cuentas del mes: gasto libre diario, sobres, ritmo de metas
+  lib/patrimonio.js        El total, lo apartado, lo libre y las reglas de reparto
   lib/habits.js            Rotación de ciclos, frecuencias, rachas y cumplimiento
   lib/todos.js             Antigüedad, posponer y orden de los pendientes
   lib/agenda.js            Horas, repetición, excepciones, "lo que sigue" y .ics
@@ -180,12 +183,14 @@ src/
   features/habitos/        Las piezas del módulo de Hábitos
   features/pendientes/     Las piezas del módulo de Pendientes
   features/agenda/         Las piezas del módulo de Agenda
+pruebas-patrimonio.mjs     Pruebas de la lógica del patrimonio
 pruebas-habitos.mjs        Pruebas de la lógica de hábitos
 pruebas-pendientes.mjs     Pruebas de la lógica de pendientes
 pruebas-agenda.mjs         Pruebas de la lógica de agenda
+prueba-navegador.mjs       Prueba en Chromium real: migración v4→v5 y el recorrido completo
 ```
 
-`npm run prueba` corre los tres archivos de pruebas, uno tras otro (132 casos).
+`npm run prueba` corre los cuatro archivos de pruebas, uno tras otro (172 casos).
 
 Regla que se sostiene sola: **`lib/` no sabe que existe React**. Son funciones que
 reciben números y regresan números, así que puedes leerlas y corregirlas sin pelearte
@@ -197,12 +202,13 @@ con la interfaz.
 - Cada registro trae `id` (uuid) y `updatedAt`, por si algún día quieres sincronizar
   entre dispositivos sin rehacer el esquema.
 - **El esquema de Dexie va por escalones.** `version(1)` es dinero, `version(2)` es
-  hábitos, `version(3)` es pendientes, `version(4)` es agenda. Al agregar un módulo se
+  hábitos, `version(3)` es pendientes, `version(4)` es agenda, `version(5)` es la
+  bitácora de las metas (`goalMoves`). Al agregar un módulo se
   escribe un bloque `version(n)` nuevo con **solo las tablas nuevas**; nunca se edita un
   bloque anterior, o la base que ya está en el teléfono se rompe al abrir la app.
 - Dato curioso por si lo ves en las herramientas del navegador: Dexie guarda en
-  IndexedDB la versión **multiplicada por 10**. El `version(4)` del código se ve como
-  versión 40 en el navegador. No está roto, es así a propósito (deja hueco por si hace
+  IndexedDB la versión **multiplicada por 10**. El `version(5)` del código se ve como
+  versión 50 en el navegador. No está roto, es así a propósito (deja hueco por si hace
   falta un escalón intermedio).
 - **Las horas se guardan como texto `'HH:MM'` de 24 horas con cero adelante**, en un
   campo aparte de la fecha, y la duración en minutos enteros. Nunca un instante
@@ -211,9 +217,63 @@ con la interfaz.
   `true` / `false`: IndexedDB no sabe indexar booleanos. Por eso `active` en hábitos
   y `done` en pendientes son números.
 - Al agregar una tabla hay que extender `exportBackup` e `importBackup` y subir el
-  `version` del respaldo (va en **4**). La importación tolera respaldos viejos: si el
+  `version` del respaldo (va en **5**). La importación tolera respaldos viejos: si el
   archivo no trae una tabla, esa tabla simplemente queda vacía. Un respaldo de la v1,
-  v2 o v3 se restaura sin reventar.
+  v2, v3 o v4 se restaura sin reventar; a un respaldo viejo con metas se le siembra su
+  bitácora al importarlo.
+
+### Cómo se cuenta tu dinero (patrimonio)
+
+Toda la app de Dinero se apoya en tres números y una regla:
+
+```
+total    = saldo inicial + todos los ingresos − todos los gastos
+apartado = suma de lo guardado en TODAS las metas
+libre    = total − apartado
+```
+
+- El **saldo inicial** (Ajustes → *Tu punto de partida*) es el dinero que ya tenías el
+  día que empezaste a usar la app. No es un ingreso: no sale en los movimientos ni en la
+  gráfica del mes. Sin él, el total arrancaría en $0 y solo sería correcto dentro de
+  varios años.
+- Son **todos** los movimientos desde siempre, no los del mes. Eso lo separa del resto
+  del módulo, que sí piensa en meses.
+- **Apartar no es gastar.** Abonar a una meta no mueve dinero a ningún lado: le pone una
+  etiqueta. Por eso abonar nunca cambia el total, solo el reparto.
+
+**La regla de oro: no puedes repartir dinero que no existe.** La suma de lo apartado
+nunca puede pasarse del total, así que abonar está topado al dinero libre. Y esa
+validación **no vive en el formulario**: vive en `abonarMeta` dentro de `db.js`, que
+rehace la cuenta leyendo la base dentro de la misma transacción que va a escribir. Si
+viviera en la pantalla, bastaría con dejar dos pestañas abiertas para apartar dos veces
+el mismo dinero.
+
+Los tres movimientos que puede tener una meta, y en qué se diferencian:
+
+| Movimiento | Qué hace | ¿Cambia tu total? |
+| --- | --- | --- |
+| **Abonar** | dinero libre pasa a estar apartado | no |
+| **Retirar** | lo apartado vuelve a estar libre | no |
+| **Usar meta** | ya lo gastaste: registra el gasto Y vacía lo apartado | **sí, baja** |
+
+`usarMeta` hace las dos cosas de forma atómica a propósito: si lo hicieras a mano en dos
+pasos y se te olvidara uno, las cuentas quedarían chuecas para siempre.
+
+Lo apartado (`goal.saved`) **no se puede escribir a mano** desde ninguna pantalla —
+`updateGoal` descarta ese campo. Solo se mueve por los tres caminos de arriba, que son
+los que revisan el tope. Cada uno deja una línea en `goalMoves`, la bitácora que ves al
+abrir la meta.
+
+**Un gasto que se pasa del dinero libre no se bloquea.** Ya pasó en la vida real, y
+obligarte a mentirle a la app sería peor que el problema. Lo que hace es subir una hoja
+que te dice cuánto falta y te ofrece tres salidas: sacar la diferencia de la meta que tú
+elijas (si la meta no alcanza sola, la hoja se queda abierta con el faltante ya
+actualizado y tomas el resto de otra), cambiar el monto, o cancelar. Al fondo queda un
+"registrarlo de todos modos" para cuando de verdad quieras dejar tu dinero libre en rojo.
+
+Cuando la cuenta sí se descuadra —borrar un ingreso viejo, bajar el saldo inicial— el
+dinero libre se pinta en negativo y la app te dice cuánto retirar para volver a cuadrar.
+Nunca inventa un número bonito para tapar el problema.
 
 ### Cómo se calcula tu gasto libre diario
 
