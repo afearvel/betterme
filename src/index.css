@@ -1,0 +1,51 @@
+@import 'tailwindcss';
+
+/* Paleta única de la app. Cambiar un color aquí lo cambia en toda la interfaz. */
+@theme {
+  --color-plane: #0d0d0d; /* fondo de la pantalla */
+  --color-surface: #1a1a19; /* tarjetas */
+  --color-line: #2c2c2a; /* separadores */
+  --color-ink: #ffffff; /* texto principal */
+  --color-ink2: #c3c2b7; /* texto secundario */
+  --color-muted: #898781; /* etiquetas, ejes */
+
+  --color-brand: #3987e5; /* serie 1 — ingresos */
+  --color-warm: #d95926; /* serie 2 — egresos */
+  --color-good: #0ca30c;
+  --color-warn: #fab219;
+  --color-crit: #d03b3b;
+}
+
+html {
+  background: var(--color-plane);
+  color-scheme: dark;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-plane);
+  color: var(--color-ink);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  overscroll-behavior-y: none;
+}
+
+/* Evita el zoom automático de iOS al enfocar un input (pasa si la letra < 16px) */
+input,
+select,
+textarea,
+button {
+  font-size: 16px;
+  font-family: inherit;
+}
+
+/* Quita las flechitas de los input number */
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
